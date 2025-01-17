@@ -8,6 +8,7 @@ import { chainAmbassador } from "./characters/chainAmbassador";
 import OpenAI from "openai";
 import * as dotenv from 'dotenv';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import * as readline from 'readline';
 
 dotenv.config();
 
@@ -35,6 +36,11 @@ export class CryptoChatRoom {
     private reactions = ['🚀', '💎', '🤔', '👀', '😅', '🤝', '💪', '🎯', '🔥', '⚡️'];
 
     private client: OpenAI;
+
+    private rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
 
     constructor() {
         const proxyUrl = `http://wqnfutnw:a57omrbixk0q@207.244.217.165:6712`;
@@ -223,8 +229,57 @@ export class CryptoChatRoom {
         const response = await this.generateAIResponse(character, "BeraChain launch");
         console.log(`${character.username}: ${response}\n`);
     }
-}
 
-// Использование:
-const chatRoom = new CryptoChatRoom();
-chatRoom.simulateMultipleDiscussions(); 
+    private async askQuestion(question: string): Promise<string> {
+        return new Promise((resolve) => {
+            this.rl.question(question, (answer) => {
+                resolve(answer.trim());
+            });
+        });
+    }
+
+    async startInteractiveChat() {
+        console.log("=== Интерактивный Крипто Чат ===");
+        console.log("Введите тему или '0' для выхода\n");
+
+        try {
+            while (true) {
+                const topic = await this.askQuestion("Тема: ").catch(e => '0');
+                
+                if (topic === '0' || !topic.trim()) {
+                    console.log("Чат завершен");
+                    this.rl.close();
+                    break;
+                }
+
+                while (true) {
+                    console.log("\nВыберите отвечающего:");
+                    this.characters.forEach((char, index) => {
+                        console.log(`${index + 1} - ${char.name}`);
+                    });
+
+                    const speakerInput = await this.askQuestion("Номер персонажа (или 0 для новой темы): ");
+                    const speakerIndex = parseInt(speakerInput) - 1;
+                    
+                    if (speakerInput === '0' || isNaN(speakerIndex) || !speakerInput.trim()) {
+                        console.log("\n---\n");
+                        break;
+                    }
+
+                    if (speakerIndex >= 0 && speakerIndex < this.characters.length) {
+                        const speaker = this.characters[speakerIndex];
+                        const response = await this.generateAIResponse(speaker, `What do you think about ${topic}?`);
+                        console.log(`\n${speaker.username}: ${response}\n`);
+                        await this.delay(500); // Небольшая пауза между сообщениями
+                    } else {
+                        console.log("Неверный номер персонажа. Попробуйте снова.");
+                    }
+                }
+            }
+        } catch (error) {
+            console.error("Произошла ошибка:", error);
+        } finally {
+            this.rl.close();
+        }
+    }
+} 

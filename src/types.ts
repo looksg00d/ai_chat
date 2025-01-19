@@ -53,4 +53,12 @@ export interface OpenAIEmbeddingResponse {
         prompt_tokens: number;
         total_tokens: number;
     };
+}
+
+export interface Message {
+    id?: string;
+    userName: string;
+    content: string;
+    roomId: string;
+    createdAt?: Date;
 } 

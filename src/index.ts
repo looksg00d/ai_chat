@@ -19,8 +19,8 @@ process.on('unhandledRejection', (error) => {
 // Запуск чата
 try {
     const chatRoom = new CryptoChatRoom();
-    chatRoom.startInteractiveChat().catch(error => {
-        console.error("\nОшибка в чате:", error);
+    chatRoom.startInteractiveChat().catch((error: Error) => {
+        console.error('Ошибка в чате:', error);
         process.exit(1);
     });
 } catch (error) {

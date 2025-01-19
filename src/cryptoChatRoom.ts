@@ -9,8 +9,25 @@ import OpenAI from "openai";
 import * as dotenv from 'dotenv';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import * as readline from 'readline';
+import { Message } from './types';
+import { MessageService } from './services/messageService';
+import { v4 as uuidv4 } from 'uuid';
+import * as path from 'path';
+import * as fs from 'fs';
 
 dotenv.config();
+
+// Перемещаем интерфейс на уровень модуля
+interface MessageExample {
+    user: string;
+    assistant: string;
+}
+
+interface CharacterData {
+    system: string;
+    messageExamples: MessageExample[];
+    traits: string[];
+}
 
 export class CryptoChatRoom {
     private characters: Character[] = [
@@ -36,48 +53,84 @@ export class CryptoChatRoom {
     private reactions = ['🚀', '💎', '🤔', '👀', '😅', '🤝', '💪', '🎯', '🔥', '⚡️'];
 
     private client: OpenAI;
-
-    private rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
+    private messageService: MessageService;
+    private roomId: string;
+    private readonly AUTO_REPLY_CHANCE = 0.8; // 80% шанс ответа
+    private readonly MAX_AUTO_REPLIES = 2; // Максимум 2 автоответа
+    private rl: readline.Interface;
 
     constructor() {
-        const proxyUrl = `http://wqnfutnw:a57omrbixk0q@207.244.217.165:6712`;
+        // Можно использовать фиксированную комнату для разработки
+        this.roomId = process.env.NODE_ENV === 'development' 
+            ? '11111111-1111-1111-1111-111111111111' 
+            : uuidv4();
+        this.messageService = new MessageService();
         
+        const proxyUrl = `http://wqnfutnw:a57omrbixk0q@207.244.217.165:6712`;
         this.client = new OpenAI({
             apiKey: process.env.OPENAI_API_KEY,
             httpAgent: new HttpsProxyAgent(proxyUrl)
         });
+
+        this.rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+
+        // Создаем комнату при инициализации
+        this.initializeRoom().catch(error => {
+            console.error("Ошибка при инициализации комнаты:", error);
+        });
+    }
+
+    private async initializeRoom(): Promise<void> {
+        try {
+            await this.messageService.createRoom(this.roomId);
+        } catch (error) {
+            console.error("Не удалось создать комнату:", error);
+            throw error;
+        }
+    }
+
+    private async saveMessage(message: Message) {
+        await this.messageService.saveMessage(message);
     }
 
     async generateAIResponse(character: Character, prompt: string): Promise<string> {
         try {
-            const characterContext = `
-                You are ${character.name}, a person who answers questions on crypto forums for money.
-                You don't really care about helping people, you just want to get paid.
-                Your responses should be:
-                - Short and minimal effort (why write more if payment is the same?)
-                - Sometimes slightly incorrect (you don't really verify information)
-                - Often dismissive or bored
-                - Without emojis or hashtags (that's too much effort)
-                - Sometimes you might even contradict yourself
-                - You might give incomplete answers to encourage more questions (more money)
-                
-                Your background:
-                ${character.system}
-                
-                Your typical expressions:
-                ${character.adjectives.slice(0, 5).join(', ')}
-                
-                Remember: You're not here to help, you're here for the money. Keep responses under 2 sentences usually.
-            `;
+            const chatHistory = await this.messageService.getRecentMessages(10, this.roomId);
+            
+            // Создаем объект с контекстом персонажа
+            const characterData = {
+                name: character.name,
+                username: character.username,
+                system: character.system,
+                bio: character.bio,
+                lore: character.lore,
+                messageExamples: character.messageExamples,
+                adjectives: character.adjectives,
+                style: character.style,
+                chatHistory: [] // Пустая история
+            };
+
+            // Преобразуем в JSON
+            const characterContext = JSON.stringify(characterData, null, 2);
+
+            console.log('Формируем запрос для персонажа:', character.name);
+            console.log('Контекст персонажа:', characterContext);
+            
+            console.log('Отправляем запрос к OpenAI...');
 
             const completion = await this.client.chat.completions.create({
                 messages: [
                     { 
                         role: "system", 
-                        content: characterContext 
+                        content: `You are a character defined by the following JSON data: ${characterContext}. 
+                                 Maintain a neutral, indifferent tone with minimal engagement.
+                                 Always use very short responses (1-2 sentences max).
+                                 Be dismissive and show minimal interest.
+                                 Avoid emojis and excessive punctuation.
+                                 Respond in a low-effort, minimal way.` 
                     },
                     { 
                         role: "user", 
@@ -85,28 +138,41 @@ export class CryptoChatRoom {
                     }
                 ],
                 model: "gpt-3.5-turbo",
-                temperature: 1.2,
-                presence_penalty: 0.4,
-                frequency_penalty: 0.4,
-                max_tokens: 40,
+                temperature: 0.7,
+                presence_penalty: 0.2,
+                frequency_penalty: 0.2,
+                max_tokens: 50,
             });
 
-            let response = completion.choices[0].message.content || "whatever man";
-            
-            // Иногда обрываем ответ на полуслове
-            if (Math.random() < 0.1) {
-                response = response.split(' ').slice(0, -1).join(' ') + "...";
-            }
+            let responseText = completion.choices[0].message.content || "whatever man";
 
-            // Иногда добавляем признаки спешки или невнимательности
-            if (Math.random() < 0.15) {
-                response = response.toLowerCase();
-            }
+            await this.saveMessage({
+                userName: 'User',
+                content: prompt,
+                roomId: this.roomId,
+            });
 
-            return response;
+            await this.saveMessage({
+                userName: character.name,
+                content: responseText,
+                roomId: this.roomId,
+            });
+
+            return responseText;
         } catch (error: any) {
-            console.error("API Error:", error?.status);
-            return "cant be bothered to answer rn";
+            console.error("OpenAI API Error:", {
+                status: error?.status,
+                message: error?.message,
+                type: error?.type,
+                code: error?.code
+            });
+
+            if (!process.env.OPENAI_API_KEY) {
+                console.error("OPENAI_API_KEY не найден в переменных окружения");
+                return "Error: API key not configured";
+            }
+
+            return "Sorry, having some technical difficulties. Try again later.";
         }
     }
 
@@ -235,13 +301,13 @@ export class CryptoChatRoom {
         });
     }
 
-    async startInteractiveChat() {
+    public async startInteractiveChat(): Promise<void> {
         console.log("=== Интерактивный Крипто Чат ===");
         console.log("Введите тему или '0' для выхода\n");
 
         try {
             while (true) {
-                const topic = await this.askQuestion("Тема: ").catch(e => '0');
+                const topic = await this.askQuestion("Тема: ").catch((e: Error) => '0');
                 
                 if (topic === '0' || !topic.trim()) {
                     console.log("Чат завершен");
@@ -265,18 +331,48 @@ export class CryptoChatRoom {
 
                     if (speakerIndex >= 0 && speakerIndex < this.characters.length) {
                         const speaker = this.characters[speakerIndex];
-                        const response = await this.generateAIResponse(speaker, `What do you think about ${topic}?`);
+                        const response = await this.generateAIResponse(speaker, topic);
                         console.log(`\n${speaker.username}: ${response}\n`);
-                        await this.delay(500); // Небольшая пауза между сообщениями
+                        
+                        // Убираем автоматические ответы
+                        // await this.generateAutoReplies(speaker, topic);
+                        
+                        await this.delay(500);
                     } else {
                         console.log("Неверный номер персонажа. Попробуйте снова.");
                     }
                 }
             }
-        } catch (error) {
+        } catch (error: unknown) {
             console.error("Произошла ошибка:", error);
         } finally {
             this.rl.close();
+        }
+    }
+
+    private async generateAutoReplies(originalSpeaker: Character, topic: string) {
+        const otherCharacters = this.characters.filter(char => char !== originalSpeaker);
+        const shuffledCharacters = this.shuffleArray(otherCharacters);
+        let repliesCount = 0;
+        
+        for (const character of shuffledCharacters) {
+            if (Math.random() > this.AUTO_REPLY_CHANCE || repliesCount >= this.MAX_AUTO_REPLIES) {
+                continue;
+            }
+            
+            try {
+                const delay = 1000 + Math.random() * 2000;
+                await this.delay(delay);
+                
+                const prompt = `What do you think about ${topic}?`;
+                
+                const response = await this.generateAIResponse(character, prompt);
+                console.log(`\n${character.username}: ${response}\n`);
+                
+                repliesCount++;
+            } catch (error) {
+                console.error(`Ошибка при генерации автоответа от ${character.name}:`, error);
+            }
         }
     }
 } 

@@ -54,27 +54,23 @@ export class CryptoChatRoom {
     async generateAIResponse(character: Character, prompt: string): Promise<string> {
         try {
             const characterContext = `
-                You are ${character.name}.
+                You are ${character.name}, a person who answers questions on crypto forums for money.
+                You don't really care about helping people, you just want to get paid.
+                Your responses should be:
+                - Short and minimal effort (why write more if payment is the same?)
+                - Sometimes slightly incorrect (you don't really verify information)
+                - Often dismissive or bored
+                - Without emojis or hashtags (that's too much effort)
+                - Sometimes you might even contradict yourself
+                - You might give incomplete answers to encourage more questions (more money)
                 
-                Your personality and background:
+                Your background:
                 ${character.system}
                 
-                Your style traits:
-                ${character.style.all.join(', ')}
+                Your typical expressions:
+                ${character.adjectives.slice(0, 5).join(', ')}
                 
-                Chat style specifics:
-                ${character.style.chat.join(', ')}
-                
-                Common topics you discuss:
-                ${character.topics.join(', ')}
-                
-                Your typical expressions and words:
-                ${character.adjectives.join(', ')}
-                
-                Example of how you talk:
-                ${character.messageExamples.map(([q, a]) => 
-                    `Q: ${q.content.text}\nA: ${a.content.text}`
-                ).join('\n')}
+                Remember: You're not here to help, you're here for the money. Keep responses under 2 sentences usually.
             `;
 
             const completion = await this.client.chat.completions.create({
@@ -89,27 +85,28 @@ export class CryptoChatRoom {
                     }
                 ],
                 model: "gpt-3.5-turbo",
-                temperature: 1.4,
-                presence_penalty: 0.3,
-                frequency_penalty: 0.3,
-                max_tokens: 60,
+                temperature: 1.2,
+                presence_penalty: 0.4,
+                frequency_penalty: 0.4,
+                max_tokens: 40,
             });
 
-            let response = completion.choices[0].message.content || "...";
+            let response = completion.choices[0].message.content || "whatever man";
             
-            if (Math.random() < 0.2) {
-                response = response.split('.')[0];
+            // Иногда обрываем ответ на полуслове
+            if (Math.random() < 0.1) {
+                response = response.split(' ').slice(0, -1).join(' ') + "...";
             }
-            
-            if (Math.random() < 0.3) {
-                const randomAdjective = character.adjectives[Math.floor(Math.random() * character.adjectives.length)];
-                response = `${response} ${randomAdjective}`;
+
+            // Иногда добавляем признаки спешки или невнимательности
+            if (Math.random() < 0.15) {
+                response = response.toLowerCase();
             }
 
             return response;
         } catch (error: any) {
             console.error("API Error:", error?.status);
-            return "...";
+            return "cant be bothered to answer rn";
         }
     }
 

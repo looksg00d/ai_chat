@@ -14,6 +14,7 @@ import { MessageService } from './services/messageService';
 import { v4 as uuidv4 } from 'uuid';
 import * as path from 'path';
 import * as fs from 'fs';
+import { DataFetchService } from './services/dataFetchService';
 
 dotenv.config();
 
@@ -39,17 +40,6 @@ export class CryptoChatRoom {
         chainAmbassador
     ];
 
-    private topics = [
-        "BeraChain launch",
-        "Base token rumors",
-        "Linea TVL growth",
-        "Monad testnet",
-        "0G AI integrations",
-        "Sahara Labs update",
-        "MegaETH architecture",
-        "BOB on Bitcoin"
-    ];
-
     private reactions = ['🚀', '💎', '🤔', '👀', '😅', '🤝', '💪', '🎯', '🔥', '⚡️'];
 
     private client: OpenAI;
@@ -58,6 +48,7 @@ export class CryptoChatRoom {
     private readonly AUTO_REPLY_CHANCE = 0.8; // 80% шанс ответа
     private readonly MAX_AUTO_REPLIES = 2; // Максимум 2 автоответа
     private rl: readline.Interface;
+    private dataFetchService: DataFetchService;
 
     constructor() {
         // Можно использовать фиксированную комнату для разработки
@@ -76,6 +67,8 @@ export class CryptoChatRoom {
             input: process.stdin,
             output: process.stdout
         });
+
+        this.dataFetchService = new DataFetchService();
 
         // Создаем комнату при инициализации
         this.initializeRoom().catch(error => {
@@ -96,11 +89,27 @@ export class CryptoChatRoom {
         await this.messageService.saveMessage(message);
     }
 
-    async generateAIResponse(character: Character, prompt: string): Promise<string> {
+    async generateAIResponse(character: Character, prompt: string, topic: string): Promise<string> {
         try {
-            const chatHistory = await this.messageService.getRecentMessages(10, this.roomId);
+            console.log('\n=== Generating AI Response ===');
+            console.log('Character:', character.name);
+            console.log('Topic:', topic);
+            console.log('User Prompt:', prompt);
             
-            // Создаем объект с контекстом персонажа
+            const chatHistory = await this.messageService.getRecentMessages(5, this.roomId);
+            const context = chatHistory
+                .map(msg => msg.content)
+                .join(' ');
+            
+            console.log('\n=== Chat Context ===');
+            console.log(context);
+
+            const topicInfo = await this.dataFetchService.searchInfo(topic, context);
+            
+            console.log('\n=== Topic Info ===');
+            console.log('Tweets:', topicInfo.tweets);
+            console.log('Summary:', topicInfo.summary);
+
             const characterData = {
                 name: character.name,
                 username: character.username,
@@ -109,187 +118,46 @@ export class CryptoChatRoom {
                 lore: character.lore,
                 messageExamples: character.messageExamples,
                 adjectives: character.adjectives,
-                style: character.style,
-                chatHistory: [] // Пустая история
+                style: character.style
             };
 
-            // Преобразуем в JSON
-            const characterContext = JSON.stringify(characterData, null, 2);
-
-            console.log('Формируем запрос для персонажа:', character.name);
-            console.log('Контекст персонажа:', characterContext);
+            console.log('\n=== Full GPT Prompt ===');
+            const systemPrompt = `You are a character defined by the following JSON data: ${JSON.stringify(characterData, null, 2)}.
+                                Current topic information:
+                                ${topicInfo.summary}
+                                
+                                Use this information to form your opinion, but maintain your character's perspective and style.
+                                Reference specific facts or tweets if relevant.
+                                Stay true to your character's personality while discussing real information.`;
             
-            console.log('Отправляем запрос к OpenAI...');
+            console.log('System Prompt:', systemPrompt);
+            console.log('User Message:', prompt);
 
             const completion = await this.client.chat.completions.create({
                 messages: [
-                    { 
-                        role: "system", 
-                        content: `You are a character defined by the following JSON data: ${characterContext}. 
-                                 Maintain a neutral, indifferent tone with minimal engagement.
-                                 Always use very short responses (1-2 sentences max).
-                                 Be dismissive and show minimal interest.
-                                 Avoid emojis and excessive punctuation.
-                                 Respond in a low-effort, minimal way.` 
-                    },
-                    { 
-                        role: "user", 
-                        content: prompt 
-                    }
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: prompt }
                 ],
                 model: "gpt-3.5-turbo",
-                temperature: 0.7,
-                presence_penalty: 0.2,
-                frequency_penalty: 0.2,
-                max_tokens: 50,
+                temperature: 0.8,
+                presence_penalty: 0.3,
+                frequency_penalty: 0.3,
+                max_tokens: 150
             });
 
-            let responseText = completion.choices[0].message.content || "whatever man";
-
-            await this.saveMessage({
-                userName: 'User',
-                content: prompt,
-                roomId: this.roomId,
-            });
-
-            await this.saveMessage({
-                userName: character.name,
-                content: responseText,
-                roomId: this.roomId,
-            });
-
-            return responseText;
-        } catch (error: any) {
-            console.error("OpenAI API Error:", {
-                status: error?.status,
-                message: error?.message,
-                type: error?.type,
-                code: error?.code
-            });
-
-            if (!process.env.OPENAI_API_KEY) {
-                console.error("OPENAI_API_KEY не найден в переменных окружения");
-                return "Error: API key not configured";
-            }
-
-            return "Sorry, having some technical difficulties. Try again later.";
-        }
-    }
-
-    async simulateDiscussion(topic: string) {
-        console.log(`=== New Discussion: ${topic} ===\n`);
-
-        interface Message {
-            username: string;
-            content: string;
-            isQuestion: boolean;
-        }
-        
-        let discussionHistory: Message[] = [];
-        
-        // 2-3 participants
-        const participants = this.shuffleArray(this.characters)
-            .slice(0, 2 + Math.floor(Math.random() * 2));
-
-        // Track message count per user
-        const userMessageCount: Record<string, number> = {};
-        participants.forEach(p => userMessageCount[p.username] = 0);
-
-        // Start discussion (50/50 question or statement)
-        const starter = participants[Math.floor(Math.random() * participants.length)];
-        const isQuestion = Math.random() < 0.5;
-        const startMessage = isQuestion ? 
-            `what's up with ${topic}?` : 
-            `checking out ${topic}`;
-
-        console.log(`${starter.username}: ${startMessage}`);
-        userMessageCount[starter.username]++;
-        
-        discussionHistory.push({
-            username: starter.username,
-            content: startMessage,
-            isQuestion
-        });
-
-        // 2-4 messages
-        const messageCount = 2 + Math.floor(Math.random() * 3);
-
-        for (let i = 0; i < messageCount; i++) {
-            // Select speaker with least messages
-            const minMessages = Math.min(...Object.values(userMessageCount));
-            const eligibleSpeakers = participants.filter(p => 
-                userMessageCount[p.username] === minMessages && 
-                p.username !== discussionHistory[discussionHistory.length - 1]?.username
-            );
-
-            if (eligibleSpeakers.length === 0) continue;
-
-            const speaker = eligibleSpeakers[Math.floor(Math.random() * eligibleSpeakers.length)];
-            const lastMessage = discussionHistory[discussionHistory.length - 1];
+            console.log('\n=== GPT Response ===');
+            console.log(completion.choices[0].message.content);
             
-            // Lower chance to ask questions (30% normally, 10% if last message was a question)
-            const shouldAskQuestion = Math.random() < (lastMessage?.isQuestion ? 0.1 : 0.3);
-
-            const prompt = `You are ${speaker.name}.
-                
-                Your recent chat history:
-                ${discussionHistory.slice(-3).map(m => `${m.username}: ${m.content}`).join('\n')}
-                
-                Topic: ${topic}
-                ${lastMessage?.isQuestion ? 'Answer the question above.' : 'Continue the discussion.'}
-                ${shouldAskQuestion ? 'End your response with a question.' : ''}
-                
-                Remember to stay in character and use your typical style.
-                Sometimes be brief, unclear or ignore messages - just like real chat.
-                
-                Generate a response:`;
-
-            const response = await this.generateAIResponse(speaker, prompt);
-            console.log(`${speaker.username}: ${response}`);
-            userMessageCount[speaker.username]++;
-            
-            const isQuestion = response.trim().endsWith('?');
-            discussionHistory.push({
-                username: speaker.username,
-                content: response,
-                isQuestion
-            });
-
-            if (Math.random() < 0.15) {
-                const reaction = this.reactions[Math.floor(Math.random() * this.reactions.length)];
-                console.log(`${reaction}`);
-            }
-            
-            await this.delay(500 + Math.random() * 1500);
-        }
-
-        console.log("\n=== End of Discussion ===");
-    }
-
-    private shuffleArray<T>(array: T[]): T[] {
-        const newArray = [...array];
-        for (let i = newArray.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
-        }
-        return newArray;
-    }
-
-    private delay(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    async simulateMultipleDiscussions() {
-        for (const topic of this.topics) {
-            await this.simulateDiscussion(topic);
-            await this.delay(2000);
-            console.log("\n");
+            return completion.choices[0].message.content || '';
+        } catch (error) {
+            console.error('Error generating response:', error);
+            return '';
         }
     }
 
     async testCharacter(character: Character) {
         console.log(`=== Тест персонажа: ${character.username} ===\n`);
-        const response = await this.generateAIResponse(character, "BeraChain launch");
+        const response = await this.generateAIResponse(character, "BeraChain launch", "BeraChain launch");
         console.log(`${character.username}: ${response}\n`);
     }
 
@@ -315,32 +183,91 @@ export class CryptoChatRoom {
                     break;
                 }
 
-                while (true) {
-                    console.log("\nВыберите отвечающего:");
-                    this.characters.forEach((char, index) => {
-                        console.log(`${index + 1} - ${char.name}`);
-                    });
+                let currentTopic = topic;
+                let discussionHistory: Array<{
+                    speaker: Character;
+                    message: string;
+                    isQuestion: boolean;
+                    topic: string;
+                }> = [];
 
-                    const speakerInput = await this.askQuestion("Номер персонажа (или 0 для новой темы): ");
-                    const speakerIndex = parseInt(speakerInput) - 1;
-                    
-                    if (speakerInput === '0' || isNaN(speakerIndex) || !speakerInput.trim()) {
-                        console.log("\n---\n");
+                // Отслеживаем, кто уже высказался по текущей теме
+                let availableCharacters = [...this.characters];
+
+                // Генерируем первое сообщение
+                const firstSpeaker = availableCharacters[Math.floor(Math.random() * availableCharacters.length)];
+                const firstResponse = await this.generateAIResponse(firstSpeaker, currentTopic, currentTopic);
+                const isFirstQuestion = firstResponse.trim().endsWith('?');
+                
+                console.log(`\n${firstSpeaker.username}: ${firstResponse}\n`);
+                discussionHistory.push({
+                    speaker: firstSpeaker,
+                    message: firstResponse,
+                    isQuestion: isFirstQuestion,
+                    topic: currentTopic
+                });
+
+                availableCharacters = availableCharacters.filter(char => char.username !== firstSpeaker.username);
+
+                while (true) {
+                    const continueChat = await this.askQuestion("Продолжить беседу? (yes/no): ");
+                    if (continueChat.toLowerCase() !== 'yes') {
+                        console.log("\n---\nБеседа завершена\n---\n");
                         break;
                     }
 
-                    if (speakerIndex >= 0 && speakerIndex < this.characters.length) {
-                        const speaker = this.characters[speakerIndex];
-                        const response = await this.generateAIResponse(speaker, topic);
-                        console.log(`\n${speaker.username}: ${response}\n`);
-                        
-                        // Убираем автоматические ответы
-                        // await this.generateAutoReplies(speaker, topic);
-                        
-                        await this.delay(500);
-                    } else {
-                        console.log("Неверный номер персонажа. Попробуйте снова.");
+                    // Спрашиваем, хочет ли пользователь сменить тему
+                    const changeTopic = await this.askQuestion("Сменить тему? (yes/no): ");
+                    if (changeTopic.toLowerCase() === 'yes') {
+                        const newTopic = await this.askQuestion("Новая тема: ");
+                        if (newTopic.trim()) {
+                            currentTopic = newTopic;
+                            // При смене темы обновляем список доступных персонажей
+                            availableCharacters = [...this.characters];
+                            console.log(`\n--- Новая тема: ${currentTopic} ---\n`);
+                        }
                     }
+
+                    // Проверяем, изменилась ли тема в последнем сообщении
+                    const lastMessage = discussionHistory[discussionHistory.length - 1];
+                    const topicChanged = lastMessage.topic !== currentTopic;
+
+                    // Если тема изменилась, обновляем список доступных персонажей
+                    if (topicChanged) {
+                        availableCharacters = [...this.characters];
+                    } else if (availableCharacters.length === 0) {
+                        console.log("\n--- Новый круг обсуждения ---\n");
+                        availableCharacters = [...this.characters];
+                    }
+
+                    const nextSpeaker = availableCharacters[Math.floor(Math.random() * availableCharacters.length)];
+                    availableCharacters = availableCharacters.filter(char => char.username !== nextSpeaker.username);
+
+                    const shouldAnswerQuestion = lastMessage.isQuestion && Math.random() < 0.7;
+
+                    let prompt = `Topic: ${currentTopic}\n` +
+                        `Previous message: ${lastMessage.message}\n` +
+                        `${shouldAnswerQuestion ? 'Answer the question above while staying in character.' : 
+                        'Continue the discussion while staying in character.'}\n` +
+                        `Previous topic was: ${lastMessage.topic}`;
+
+                    const response = await this.generateAIResponse(nextSpeaker, prompt, currentTopic);
+                    const isQuestion = response.trim().endsWith('?');
+
+                    console.log(`\n${nextSpeaker.username}: ${response}\n`);
+                    discussionHistory.push({
+                        speaker: nextSpeaker,
+                        message: response,
+                        isQuestion,
+                        topic: currentTopic
+                    });
+
+                    if (Math.random() < 0.15) {
+                        const reaction = this.reactions[Math.floor(Math.random() * this.reactions.length)];
+                        console.log(`${reaction}\n`);
+                    }
+
+                    await this.delay(500);
                 }
             }
         } catch (error: unknown) {
@@ -366,7 +293,7 @@ export class CryptoChatRoom {
                 
                 const prompt = `What do you think about ${topic}?`;
                 
-                const response = await this.generateAIResponse(character, prompt);
+                const response = await this.generateAIResponse(character, prompt, topic);
                 console.log(`\n${character.username}: ${response}\n`);
                 
                 repliesCount++;
@@ -374,5 +301,18 @@ export class CryptoChatRoom {
                 console.error(`Ошибка при генерации автоответа от ${character.name}:`, error);
             }
         }
+    }
+
+    private shuffleArray<T>(array: T[]): T[] {
+        const newArray = [...array];
+        for (let i = newArray.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+        }
+        return newArray;
+    }
+
+    private delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 } 

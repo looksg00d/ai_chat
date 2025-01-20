@@ -93,6 +93,10 @@ export class CryptoChatRoom {
         try {
             console.log('\n=== Generating AI Response ===');
             console.log('Character:', character.name);
+            console.log('Character System:', character.system);
+            console.log('Character Bio:', character.bio);
+            console.log('Character Style:', JSON.stringify(character.style, null, 2));
+            console.log('Character Adjectives:', character.adjectives);
             console.log('Topic:', topic);
             console.log('User Prompt:', prompt);
             
@@ -121,34 +125,137 @@ export class CryptoChatRoom {
                 style: character.style
             };
 
-            console.log('\n=== Full GPT Prompt ===');
-            const systemPrompt = `You are a character defined by the following JSON data: ${JSON.stringify(characterData, null, 2)}.
-                                Current topic information:
-                                ${topicInfo.summary}
-                                
-                                Use this information to form your opinion, but maintain your character's perspective and style.
-                                Reference specific facts or tweets if relevant.
-                                Stay true to your character's personality while discussing real information.`;
-            
-            console.log('System Prompt:', systemPrompt);
-            console.log('User Message:', prompt);
+            console.log('\n=== Character Data Sent to GPT ===');
+            console.log(JSON.stringify(characterData, null, 2));
+
+            // Первый запрос - генерация ответа
+            const generationPrompt = `You are in a casual crypto group chat.
+                                    Topic: ${topicInfo.summary}
+                                    
+                                    STRICT RULES:
+                                    - Keep responses VERY short (max 10 words)
+                                    - NO punctuation at all (no commas no dots)
+                                    - Write like you're too lazy to use shift or punctuation
+                                    - No introductions or explanations
+                                    - React naturally to: "${prompt}"`;
+
+            console.log('\n=== Generation Prompt ===');
+            console.log(generationPrompt);
 
             const completion = await this.client.chat.completions.create({
                 messages: [
-                    { role: "system", content: systemPrompt },
+                    { role: "system", content: generationPrompt },
                     { role: "user", content: prompt }
                 ],
                 model: "gpt-3.5-turbo",
                 temperature: 0.8,
-                presence_penalty: 0.3,
-                frequency_penalty: 0.3,
                 max_tokens: 150
             });
 
-            console.log('\n=== GPT Response ===');
-            console.log(completion.choices[0].message.content);
+            const generatedResponse = completion.choices[0].message.content || '';
+            console.log('\n=== Generated Response ===');
+            console.log(generatedResponse);
+
+            // Обработка ответа
+            let cleanedResponse = generatedResponse
+                .replace(/[.,!?;:'"]/g, '') // убираем пунктуацию
+                .replace(/^"/, '')  // убираем кавычки в начале
+                .replace(/"$/, '')  // убираем кавычки в конце
+                .trim();
+
+            // Получаем последние сообщения из БД
+            const recentMessages = await this.messageService.getRecentMessages(20, this.roomId);
             
-            return completion.choices[0].message.content || '';
+            // Проверяем схожесть с предыдущими ответами
+            const similarityPrompt = `Compare these messages and return similarity score (0.0 to 1.0):
+            Message 1: "${cleanedResponse}"
+            Message 2: "${recentMessages.map(m => m.content).join('" "')}"\n
+            Return only the number.`;
+
+            const similarity = await this.client.chat.completions.create({
+                messages: [{ role: "user", content: similarityPrompt }],
+                model: "gpt-3.5-turbo",
+                temperature: 0.1,
+                max_tokens: 10
+            });
+
+            const similarityScore = parseFloat(similarity.choices[0].message.content || '0');
+            console.log('\n=== Similarity Score ===');
+            console.log(similarityScore);
+
+            // Если ответ слишком похож на предыдущие, генерируем новый
+            if (similarityScore > 0.7) {
+                console.log('\n=== Response too similar, generating alternative ===');
+                const alternativePrompt = `Generate a completely different response about ${topic}.
+                                         Must be unique and not similar to: "${cleanedResponse}"
+                                         Keep it very short and casual, no punctuation.`;
+
+                const alternative = await this.client.chat.completions.create({
+                    messages: [
+                        { role: "system", content: character.system },
+                        { role: "user", content: alternativePrompt }
+                    ],
+                    model: "gpt-3.5-turbo",
+                    temperature: 1.0, // Увеличиваем температуру для большей вариативности
+                    max_tokens: 150
+                });
+
+                return alternative.choices[0].message.content || cleanedResponse;
+            }
+
+            // Только 10% шанс на эмодзи, хештеги полностью запрещены
+            const canUseEmoji = Math.random() < 0.1;
+
+            // Валидация
+            const validationPrompt = `You are a chat quality validator for crypto messages.
+
+Review this response: "${cleanedResponse}"
+
+STRICT RULES:
+1. Must be EXTREMELY short (max 10 words)
+2. NO punctuation at all:
+   - no commas
+   - no dots
+   - no ellipsis
+   - no exclamation marks
+3. Emojis: ${canUseEmoji ? 'max 1 allowed' : 'not allowed'}
+4. Must feel super lazy
+5. Write like typing takes too much effort
+
+Bad examples (with punctuation):
+- "yeah, saw it, crazy stuff"
+- "melania token? meh, maybe later"
+- "interesting, but not sure..."
+- "pump looks good, might ape in"
+
+Good examples (no punctuation):
+- "yeah saw it crazy stuff"
+- "melania token meh maybe later"
+- "interesting but not sure"
+- "pump looks good might ape"
+- "nah im good"
+- "same shit different day"
+
+Fix any response that has ANY punctuation marks.
+If it's good, return "VALID"`;
+
+            console.log('\n=== Validation Prompt ===');
+            console.log(validationPrompt);
+
+            const validation = await this.client.chat.completions.create({
+                messages: [{ role: "user", content: validationPrompt }],
+                model: "gpt-3.5-turbo",
+                temperature: 0.3,
+                max_tokens: 150
+            });
+
+            const validationResult = validation.choices[0].message.content || '';
+            console.log('\n=== Validation Result ===');
+            console.log(validationResult);
+
+            // Возвращаем исправленный ответ или оригинальный, если он прошел валидацию
+            return validationResult === 'VALID' ? cleanedResponse : validationResult;
+
         } catch (error) {
             console.error('Error generating response:', error);
             return '';
